@@ -1,6 +1,8 @@
 from locust import HttpUser, task, between
 import json
 import os
+import google.auth.transport.requests
+import google.oauth2.id_token
 
 # --- Configuration ---
 # Replace with your actual GCP Project ID, Endpoint ID, and Location
@@ -36,14 +38,41 @@ class VertexAIUser(HttpUser):
 
     # wait_time defines the time between tasks for a single user
     # This simulates think time between requests. Adjust based on your scenario.
-    # between(1, 5) means wait between 1 and 5 seconds before starting the next task
-    # For saturation testing, you might want a low wait_time or even constant(0)
-    # to maximize the rate at which a single user *could* send requests if not limited by the server.
-    # However, Locust's user count is the primary control for *concurrent* requests.
     wait_time = between(0.1, 0.5) # Example: wait between 0.1 and 0.5 seconds
+
+    def on_start(self):
+        """
+        Called when a Locust user starts. Obtain an access token here.
+        """
+        print("Authenticating to Google Cloud...")
+        try:
+            # Use google-auth to get default credentials
+            # This will automatically look for credentials in your environment
+            # (e.g., GOOGLE_APPLICATION_CREDENTIALS, gcloud default credentials)
+            credentials, project = google.auth.default()
+
+            # If the credentials are not service account or GCE credentials,
+            # you might need to refresh them.
+            auth_req = google.auth.transport.requests.Request()
+            credentials.refresh(auth_req)
+
+            # Get the access token
+            self.access_token = credentials.token
+            print("Authentication successful. Access token obtained.")
+
+        except Exception as e:
+            print(f"Authentication failed: {e}")
+            # In a real test, you might want to handle this more gracefully
+            # or stop the user. For this example, we'll print and continue,
+            # but requests will likely fail without a valid token.
+            self.access_token = None
 
     @task
     def predict_llama(self):
+        if not self.access_token:
+            print("Skipping request due to missing access token.")
+            return # Skip the task if authentication failed
+
         # Define the request payload in the format expected by Vertex AI
         payload = {
             "instances": [
@@ -59,10 +88,16 @@ class VertexAIUser(HttpUser):
         # Define the full path for the POST request
         predict_path = f"/v1/projects/{PROJECT_ID}/locations/{LOCATION}/endpoints/{ENDPOINT_ID}:predict"
 
+        # Define the headers, including the Authorization header with the access token
+        headers = {
+            "Authorization": f"Bearer {self.access_token}",
+            "Content-Type": "application/json" # Usually required for JSON payloads
+        }
+
         # Send the POST request
         # The 'name' parameter groups requests in the Locust UI.
         # Using a static string like "/predict" is recommended for aggregation.
-        self.client.post(predict_path, json=payload, name="/predict")
+        self.client.post(predict_path, json=payload, headers=headers, name="/predict")
 
 # --- Instructions to Run ---
 # 1. Save this code as a Python file (e.g., locustfile.py).
@@ -73,10 +108,14 @@ class VertexAIUser(HttpUser):
 #    Ensure 'maxOutputTokens' is set to a realistic value for your use case.
 # 4. Ensure you have authenticated to Google Cloud and have permissions to invoke
 #    the Vertex AI endpoint from where you are running Locust.
-#    (e.g., by running `gcloud auth application-default login` or using a service account).
-# 5. Install Locust: pip install locust google-cloud-aiplatform google-auth
-#    (google-cloud-aiplatform and google-auth might be helpful for local testing setup,
-#     though Locust's HttpUser directly makes HTTP requests).
+#    The script uses `google.auth.default()` which looks for credentials in your
+#    environment. The easiest way is often to run:
+#    `gcloud auth application-default login`
+#    in your terminal where you will run Locust. Or, set the
+#    `GOOGLE_APPLICATION_CREDENTIALS` environment variable to the path of a
+#    service account key file.
+# 5. Install required libraries:
+#    pip install locust google-cloud-aiplatform google-auth
 # 6. Run Locust from your terminal in the same directory as the locustfile.py:
 #    locust -f locustfile.py
 # 7. Open your web browser to http://localhost:8089 (or the address shown in the terminal).
