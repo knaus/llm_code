@@ -1,0 +1,19 @@
+FROM python:3.10-slim-buster
+
+WORKDIR /app
+
+RUN pip install --upgrade pip
+RUN pip install vllm google-cloud-storage
+
+# Set your GCS bucket name and the path to the model directory within the bucket
+ENV GCS_BUCKET_NAME="your-gcs-bucket-name"
+ENV MODEL_BUCKET_PATH="path/to/Meta-Llama-3-8B"
+ENV LOCAL_MODEL_PATH="./models/Meta-Llama-3-8B"
+
+# Create the local directory for the model
+RUN mkdir -p "$LOCAL_MODEL_PATH"
+
+# Download the model files from GCS
+RUN python -c "from google.cloud import storage; import os; bucket_name = os.environ.get('GCS_BUCKET_NAME'); model_path = os.environ.get('MODEL_BUCKET_PATH'); local_path = os.environ.get('LOCAL_MODEL_PATH'); client = storage.Client(); bucket = client.bucket(bucket_name); blobs = bucket.list_blobs(prefix=model_path); for blob in blobs: destination_uri = os.path.join(local_path, blob.name[len(model_path) + 1:] if model_path else blob.name); os.makedirs(os.path.dirname(destination_uri), exist_ok=True); blob.download_to_filename(destination_uri)"
+
+CMD ["python", "-m", "vllm.entrypoints.openai.api_server", "--model", "$LOCAL_MODEL_PATH"]
